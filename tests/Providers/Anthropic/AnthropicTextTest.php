@@ -6,8 +6,15 @@ namespace Tests\Providers\Anthropic;
 
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Prism\Prism\Enums\Provider;
+use Prism\Prism\Events\HttpRequestCompleted;
+use Prism\Prism\Events\HttpRequestStarted;
+use Prism\Prism\Events\PrismRequestCompleted;
+use Prism\Prism\Events\PrismRequestStarted;
+use Prism\Prism\Events\ToolCallCompleted;
+use Prism\Prism\Events\ToolCallStarted;
 use Prism\Prism\Exceptions\PrismProviderOverloadedException;
 use Prism\Prism\Exceptions\PrismRateLimitedException;
 use Prism\Prism\Exceptions\PrismRequestTooLargeException;
@@ -42,6 +49,59 @@ it('can generate text with a prompt', function (): void {
     expect($response->text)->toBe(
         "I am an AI assistant created by Anthropic to be helpful, harmless, and honest. I don't have a physical form or avatar - I'm a language model trained to engage in conversation and help with tasks. How can I assist you today?"
     );
+});
+
+it('dispatch events while generating text with a prompt', function (): void {
+    Event::fake();
+
+    FixtureResponse::fakeResponseSequence('v1/messages', 'anthropic/generate-text-with-a-prompt');
+
+    $provider = 'anthropic';
+    $model = 'claude-3-5-sonnet-20240620';
+    $prompt = 'Who are you?';
+
+    $response = Prism::text()
+        ->using($provider, $model)
+        ->withPrompt($prompt)
+        ->asText();
+
+    Event::assertDispatched(function (PrismRequestStarted $event) use ($provider, $model, $prompt): true {
+        $attributes = $event->attributes;
+
+        expect($event->provider)->toBe($provider);
+        expect($attributes['request']->model())->toBe($model);
+        expect($attributes['request']->prompt())->toBe($prompt);
+
+        return true;
+    });
+
+    Event::assertDispatched(function (HttpRequestStarted $event) use ($model): true {
+        $attributes = $event->attributes;
+
+        expect($attributes['model'])->toBe($model);
+        expect($attributes['tools'])->toBe([]);
+
+        return true;
+    });
+
+    Event::assertDispatched(function (HttpRequestCompleted $event) use ($response): true {
+        $attributes = $event->attributes;
+
+        expect($attributes['id'])->toBe($response->meta->id);
+        expect($attributes['stop_reason'])->toBe('end_turn');
+        expect($attributes['usage']['input_tokens'])->toBe($response->usage->promptTokens);
+        expect($attributes['usage']['output_tokens'])->toBe($response->usage->completionTokens);
+
+        return true;
+    });
+
+    Event::assertDispatched(function (PrismRequestCompleted $event) use ($response): true {
+        $attributes = $event->attributes;
+
+        expect($attributes['response'])->toBe($response);
+
+        return true;
+    });
 });
 
 it('can generate text with a system prompt', function (): void {
@@ -111,6 +171,88 @@ it('can generate text using multiple tools and multiple steps', function (): voi
     expect($response->text)->toContain('The Tigers game is scheduled for 3:00 PM today in Detroit');
     expect($response->text)->toContain('it will be 75°F (about 24°C) and sunny');
     expect($response->text)->toContain("you likely won't need a coat");
+});
+
+it('dispatch events while generating text using multiple tools and multiple steps', function (): void {
+    Event::fake();
+
+    FixtureResponse::fakeResponseSequence('v1/messages', 'anthropic/generate-text-with-multiple-tools');
+
+    $provider = 'anthropic';
+    $model = 'claude-3-5-sonnet-20240620';
+    $prompt = 'What time is the tigers game today and should I wear a coat?';
+
+    $tools = [
+        Tool::as('weather')
+            ->for('useful when you need to search for current weather conditions')
+            ->withStringParameter('city', 'the city you want the weather for')
+            ->using(fn (string $city): string => 'The weather will be 75° and sunny'),
+        Tool::as('search')
+            ->for('useful for searching curret events or data')
+            ->withStringParameter('query', 'The detailed search query')
+            ->using(fn (string $query): string => 'The tigers game is at 3pm in detroit'),
+    ];
+
+    $response = Prism::text()
+        ->using($provider, $model)
+        ->withTools($tools)
+        ->withMaxSteps(3)
+        ->withPrompt($prompt)
+        ->asText();
+
+    Event::assertDispatched(PrismRequestStarted::class, 3);
+    Event::assertDispatched(ToolCallStarted::class, 2);
+    Event::assertDispatched(ToolCallCompleted::class, 2);
+    Event::assertDispatched(HttpRequestStarted::class, 3);
+    Event::assertDispatched(HttpRequestCompleted::class, 3);
+
+    $prismRequestStartedEvents = Event::dispatched(PrismRequestStarted::class);
+    $prismRequestCompletedEvents = Event::dispatched(PrismRequestCompleted::class);
+
+    expect($response->text)->toContain('The Tigers game is scheduled for 3:00 PM today in Detroit');
+    expect($response->text)->toContain('it will be 75°F (about 24°C) and sunny');
+    expect($response->text)->toContain("you likely won't need a coat");
+
+    // First step
+    $firstRequest = $prismRequestStartedEvents[0][0]->attributes['request'];
+    expect($prismRequestStartedEvents[0][0]->provider)->toBe('anthropic');
+    expect($firstRequest->messages())->toHaveCount(1);
+    expect($firstRequest->tools())->toHaveCount(2);
+    expect($firstRequest->tools())->toBe($tools);
+
+    $firstResponse = $prismRequestCompletedEvents[0][0]->attributes['response'];
+    expect($firstResponse->text)->toBe("To answer your questions, I'll need to search for information about the Tigers game and check the weather. Let me do that for you.");
+    expect($firstResponse->toolCalls)->toHaveCount(1);
+    expect($firstResponse->toolCalls[0]->name)->toBe('search');
+    expect($firstResponse->toolCalls[0]->arguments())->toBe([
+        'query' => 'Detroit Tigers baseball game time today',
+    ]);
+
+    // Second step
+    $secondRequest = $prismRequestStartedEvents[1][0]->attributes['request'];
+    expect($secondRequest['messages'])->toHaveCount(3);
+    expect($secondRequest['messages'][2]['content'][0]['type'])->toBe('tool_result');
+
+    $secondResponse = $prismRequestCompletedEvents[1][0]->attributes['response'];
+    expect($secondResponse->text)->toBe("Thank you for that information. Now, let's check the weather in Detroit to determine if you should wear a coat.");
+    expect($secondResponse->toolCalls)->toHaveCount(1);
+    expect($secondResponse->toolCalls[0]->name)->toBe('weather');
+    expect($secondResponse->toolCalls[0]->arguments())->toBe([
+        'city' => 'Detroit',
+    ]);
+
+    // Third step
+    $thirdRequest = $prismRequestStartedEvents[2][0]->attributes['request'];
+    expect($thirdRequest['messages'])->toHaveCount(5);
+    expect($thirdRequest['messages'][2]['content'][0]['type'])->toBe('tool_result');
+    expect($thirdRequest['messages'][2]['content'][0]['content'])->toBe('The tigers game is at 3pm in detroit');
+    expect($thirdRequest['messages'][4]['content'][0]['type'])->toBe('tool_result');
+    expect($thirdRequest['messages'][4]['content'][0]['content'])->toBe('The weather will be 75° and sunny');
+
+    $thirdResponse = $prismRequestCompletedEvents[2][0]->attributes['response'];
+    expect($thirdResponse->text)->toContain('The Tigers game is scheduled for 3:00 PM today in Detroit');
+    expect($thirdResponse->text)->toContain('it will be 75°F (about 24°C) and sunny');
+    expect($thirdResponse->text)->toContain("you likely won't need a coat");
 });
 
 it('can send images from file', function (): void {
