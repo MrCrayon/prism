@@ -73,10 +73,12 @@ class Stream
     {
         $this->state->reset();
 
-        yield from $this->processStreamChunks($response, $request);
+        foreach ($this->processStreamChunks($response, $request) as $chunk) {
+            yield $chunk;
+        }
 
         if ($this->state->hasToolCalls()) {
-            Trace::end(fn () => event(new PrismRequestCompleted(Provider::Anthropic->value, ['response' => $this->state])));
+            Trace::end(fn () => event(new PrismRequestCompleted(Provider::Anthropic->value, ['chunk' => $chunk])));
 
             yield from $this->handleToolCalls($request, $this->mapToolCalls(), $this->state->buildAdditionalContent());
         }
