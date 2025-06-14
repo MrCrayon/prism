@@ -7,7 +7,11 @@ use Prism\Prism\Concerns\InitializesClient;
 use Prism\Prism\Contracts\Provider;
 use Prism\Prism\Embeddings\Request as EmbeddingRequest;
 use Prism\Prism\Embeddings\Response as EmbeddingsResponse;
+use Prism\Prism\Enums\Provider as ProviderName;
 use Prism\Prism\Exceptions\PrismException;
+use Prism\Prism\Rerank\PendingRequest as PendingRerankRequest;
+use Prism\Prism\Rerank\Request as RerankRequest;
+use Prism\Prism\Rerank\Response as RerankResponse;
 use Prism\Prism\Structured\Request as StructuredRequest;
 use Prism\Prism\Structured\Response as StructuredResponse;
 use Prism\Prism\Text\Request as TextRequest;
@@ -38,6 +42,22 @@ class VoyageAI implements Provider
     public function embeddings(EmbeddingRequest $request): EmbeddingsResponse
     {
         $handler = new Embeddings($this->client(
+            $request->clientOptions(),
+            $request->clientRetry()
+        ));
+
+        return $handler->handle($request);
+    }
+
+    public static function reranks(string $model): PendingRerankRequest
+    {
+        return (new PendingRerankRequest)
+            ->using(ProviderName::VoyageAI, $model);
+    }
+
+    public function rerank(RerankRequest $request): RerankResponse
+    {
+        $handler = new Reranks($this->client(
             $request->clientOptions(),
             $request->clientRetry()
         ));
