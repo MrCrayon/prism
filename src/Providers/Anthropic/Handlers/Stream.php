@@ -33,6 +33,7 @@ use Prism\Prism\ValueObjects\Messages\ToolResultMessage;
 use Prism\Prism\ValueObjects\Meta;
 use Prism\Prism\ValueObjects\ToolCall;
 use Prism\Prism\ValueObjects\ToolResult;
+use Prism\Prism\ValueObjects\Usage;
 use Psr\Http\Message\StreamInterface;
 use Throwable;
 
@@ -144,7 +145,8 @@ class Stream
     {
         $this->state
             ->setModel(data_get($chunk, 'message.model', ''))
-            ->setRequestId(data_get($chunk, 'message.id', ''));
+            ->setRequestId(data_get($chunk, 'message.id', ''))
+            ->setUsage(data_get($chunk, 'message.usage', []));
 
         return new Chunk(
             text: '',
@@ -367,6 +369,12 @@ class Stream
             $this->state->setStopReason($stopReason);
         }
 
+        $usage = data_get($chunk, 'usage');
+
+        if ($usage) {
+            $this->state->setUsage($usage);
+        }
+
         if ($this->state->isToolUseFinish()) {
             return $this->handleToolUseFinish($request);
         }
@@ -381,6 +389,8 @@ class Stream
      */
     protected function handleMessageStop(Response $response, Request $request): Chunk
     {
+        $usage = $this->state->usage();
+
         return new Chunk(
             text: $this->state->text(),
             finishReason: FinishReasonMap::map($this->state->stopReason()),
@@ -388,6 +398,13 @@ class Stream
                 id: $this->state->requestId(),
                 model: $this->state->model(),
                 rateLimits: $this->processRateLimits($response)
+            ),
+            usage: new Usage(
+                promptTokens: $usage['input_tokens'] ?? 0,
+                completionTokens: $usage['output_tokens'] ?? 0,
+                cacheWriteInputTokens: $usage['cache_creation_input_tokens'] ?? 0,
+                cacheReadInputTokens: $usage['cache_read_input_tokens'] ?? 0,
+                thoughtTokens: $usage['cache_read_input_tokens'] ?? 0,
             ),
             additionalContent: $this->state->buildAdditionalContent(),
             chunkType: ChunkType::Meta

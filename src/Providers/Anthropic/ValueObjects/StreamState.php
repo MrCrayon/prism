@@ -9,6 +9,7 @@ class StreamState
     /**
      * @param  array<int, array<string, mixed>>  $toolCalls
      * @param  array<int, MessagePartWithCitations>  $citations
+     * @param  array<string, int>  $usage
      * @param  array<string, mixed>|null  $tempCitation
      */
     public function __construct(
@@ -20,6 +21,7 @@ class StreamState
         protected string $thinkingSignature = '',
         protected array $citations = [],
         protected string $stopReason = '',
+        protected ?array $usage = [],
         protected ?string $tempContentBlockType = null,
         protected ?int $tempContentBlockIndex = null,
         protected ?array $tempCitation = null,
@@ -133,6 +135,30 @@ class StreamState
     public function addCitation(MessagePartWithCitations $citation): self
     {
         $this->citations[] = $citation;
+
+        return $this;
+    }
+
+    /**
+     * @return array<string, int>|null
+     */
+    public function usage(): ?array
+    {
+        return $this->usage;
+    }
+
+    /**
+     * @param  array<string, int>  $usage
+     */
+    public function setUsage(array $usage): self
+    {
+        if ($this->usage === []) {
+            $this->usage = $usage;
+        } else {
+            foreach ($usage as $key => $value) {
+                $this->usage[$key] = ($this->usage[$key] ?? 0) + $value;
+            }
+        }
 
         return $this;
     }
